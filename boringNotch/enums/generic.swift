@@ -28,6 +28,8 @@ public enum NotchViews {
     case home
     case shelf
     case performance
+    case clipboard
+    case screenshots
 }
 
 enum SettingsEnum {

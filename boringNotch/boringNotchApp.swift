@@ -280,6 +280,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Clipboard history must run all the time to catch every copy.
+        ClipboardManager.shared.start()
 
         NotificationCenter.default.addObserver(
             self,

@@ -23,6 +23,7 @@ struct ContentView: View {
     @ObservedObject var batteryModel = BatteryStatusViewModel.shared
     @ObservedObject var brightnessManager = BrightnessManager.shared
     @ObservedObject var volumeManager = VolumeManager.shared
+    @ObservedObject var screenshotManager = ScreenshotManager.shared
     @State private var hoverTask: Task<Void, Never>?
     @State private var isHovering: Bool = false
     @State private var anyDropDebounceTask: Task<Void, Never>?
@@ -65,6 +66,8 @@ struct ContentView: View {
             && vm.notchState == .closed && Defaults[.showPowerStatusNotifications]
         {
             chinWidth = 640
+        } else if screenshotManager.isRecording && vm.notchState == .closed {
+            chinWidth += 2 * recordingWingWidth
         } else if (!coordinator.expandingView.show || coordinator.expandingView.type == .music)
             && vm.notchState == .closed && (musicManager.isPlaying || !musicManager.isPlayerIdle)
             && coordinator.musicLiveActivityEnabled && !vm.hideOnClosed
@@ -287,6 +290,8 @@ struct ContentView: View {
                       } else if coordinator.sneakPeek.show && Defaults[.inlineHUD] && (coordinator.sneakPeek.type != .music) && (coordinator.sneakPeek.type != .battery) && vm.notchState == .closed {
                           InlineHUD(type: $coordinator.sneakPeek.type, value: $coordinator.sneakPeek.value, icon: $coordinator.sneakPeek.icon, hoverAnimation: $isHovering, gestureProgress: $gestureProgress)
                               .transition(.opacity)
+                      } else if vm.notchState == .closed, let startedAt = screenshotManager.recordingStartedAt {
+                          RecordingLiveActivity(startedAt: startedAt)
                       } else if (!coordinator.expandingView.show || coordinator.expandingView.type == .music) && vm.notchState == .closed && (musicManager.isPlaying || !musicManager.isPlayerIdle) && coordinator.musicLiveActivityEnabled && !vm.hideOnClosed {
                           MusicLiveActivity()
                               .frame(alignment: .center)
@@ -351,6 +356,10 @@ struct ContentView: View {
                         ShelfView()
                     case .performance:
                         PerformanceView()
+                    case .clipboard:
+                        ClipboardView()
+                    case .screenshots:
+                        ScreenshotsView()
                     }
                 }
                 .transition(
@@ -364,6 +373,41 @@ struct ContentView: View {
             }
         }
         .onDrop(of: [.fileURL, .url, .utf8PlainText, .plainText, .data], delegate: GeneralDropTargetDelegate(isTargeted: $vm.generalDropTargeting))
+    }
+
+    private let recordingWingWidth: CGFloat = 44
+
+    /// Closed-notch indicator while a screen recording runs: red dot left of the
+    /// camera, elapsed time right of it. Clicking it stops the recording.
+    @ViewBuilder
+    func RecordingLiveActivity(startedAt: Date) -> some View {
+        HStack(spacing: 0) {
+            TimelineView(.periodic(from: startedAt, by: 0.5)) { context in
+                let elapsed = context.date.timeIntervalSince(startedAt)
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: 9, height: 9)
+                    .opacity(Int(elapsed * 2) % 2 == 0 ? 1 : 0.35)
+                    .animation(.easeInOut(duration: 0.4), value: Int(elapsed * 2))
+            }
+            .frame(width: recordingWingWidth)
+
+            Rectangle()
+                .fill(.black)
+                .frame(width: vm.closedNotchSize.width - 20)   // same gap as the face / music activity
+
+            TimelineView(.periodic(from: startedAt, by: 1)) { context in
+                Text(RecordingTimer.text(since: startedAt, now: context.date))
+                    .font(.system(size: 12, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(.white)
+            }
+            .frame(width: recordingWingWidth)
+        }
+        .frame(height: vm.effectiveClosedNotchHeight, alignment: .center)
+        .contentShape(Rectangle())
+        .onTapGesture { screenshotManager.stopRecording() }
+        .help("Aufnahme beenden")
+        .transition(.opacity)
     }
 
     @ViewBuilder
@@ -585,7 +629,7 @@ struct ContentView: View {
     }
 
     private func handleUpGesture(translation: CGFloat, phase: NSEvent.Phase) {
-        guard vm.notchState == .open && !vm.isHoveringCalendar else { return }
+        guard vm.notchState == .open && !vm.isHoveringCalendar && !vm.isHoveringScrollable else { return }
 
         withAnimation(animationSpring) {
             gestureProgress = (translation / Defaults[.gestureSensitivity]) * -20

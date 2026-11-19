@@ -241,6 +241,90 @@ final class XPCHelperClient: NSObject {
             return false
         }
     }
+
+    // MARK: - Processes
+
+    /// Summed memory footprint (app + descendant processes) per PID, in bytes.
+    nonisolated func memoryFootprints(for pids: [pid_t]) async -> [pid_t: UInt64] {
+        guard let payload = try? JSONSerialization.data(withJSONObject: pids.map { Int($0) }) else { return [:] }
+        do {
+            let service = await MainActor.run {
+                ensureRemoteService()
+            }
+            let data: Data? = try await service.withContinuation { service, continuation in
+                service.memoryFootprints(payload) { reply in
+                    continuation.resume(returning: reply)
+                }
+            }
+            guard let data,
+                  let dict = try? JSONSerialization.jsonObject(with: data) as? [String: NSNumber]
+            else { return [:] }
+            var result: [pid_t: UInt64] = [:]
+            for (key, value) in dict {
+                if let pid = pid_t(key) { result[pid] = value.uint64Value }
+            }
+            return result
+        } catch {
+            return [:]
+        }
+    }
+
+    nonisolated func terminateApp(pid: pid_t, force: Bool) async -> Bool {
+        do {
+            let service = await MainActor.run {
+                ensureRemoteService()
+            }
+            return try await service.withContinuation { service, continuation in
+                service.terminateApp(pid, force: force) { success in
+                    continuation.resume(returning: success)
+                }
+            }
+        } catch {
+            return false
+        }
+    }
+
+    // MARK: - Screen recording (runs in the helper; screencapture -v fails in the sandbox)
+
+    nonisolated func startScreenRecording(arguments: [String], outputPath: String) async -> Bool {
+        guard let payload = try? JSONSerialization.data(withJSONObject: arguments) else { return false }
+        do {
+            let service = await MainActor.run { ensureRemoteService() }
+            return try await service.withContinuation { service, continuation in
+                service.startScreenRecording(payload, outputPath: outputPath) { success in
+                    continuation.resume(returning: success)
+                }
+            }
+        } catch {
+            return false
+        }
+    }
+
+    nonisolated func stopScreenRecording() async -> Bool {
+        do {
+            let service = await MainActor.run { ensureRemoteService() }
+            return try await service.withContinuation { service, continuation in
+                service.stopScreenRecording { written in
+                    continuation.resume(returning: written)
+                }
+            }
+        } catch {
+            return false
+        }
+    }
+
+    nonisolated func isScreenRecording() async -> Bool {
+        do {
+            let service = await MainActor.run { ensureRemoteService() }
+            return try await service.withContinuation { service, continuation in
+                service.isScreenRecording { running in
+                    continuation.resume(returning: running)
+                }
+            }
+        } catch {
+            return false
+        }
+    }
 }
 
 extension Notification.Name {

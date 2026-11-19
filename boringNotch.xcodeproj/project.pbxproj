@@ -114,6 +114,12 @@
 		9A0887352C7AFF8E00C160EA /* TabSelectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A0887342C7AFF8E00C160EA /* TabSelectionView.swift */; };
 		AAAA00022EC9000100F841DB /* PerformanceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00012EC9000100F841DB /* PerformanceManager.swift */; };
 		AAAA00042EC9000100F841DB /* PerformanceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00032EC9000100F841DB /* PerformanceView.swift */; };
+		AAAA000E2EC9000100F841DB /* ScreenshotEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA000D2EC9000100F841DB /* ScreenshotEditor.swift */; };
+		AAAA00102EC9000100F841DB /* CaptureSelectionOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA000F2EC9000100F841DB /* CaptureSelectionOverlay.swift */; };
+		AAAA000C2EC9000100F841DB /* ScreenshotsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA000B2EC9000100F841DB /* ScreenshotsView.swift */; };
+		AAAA000A2EC9000100F841DB /* ClipboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00092EC9000100F841DB /* ClipboardView.swift */; };
+		AAAA00082EC9000100F841DB /* ScreenshotManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00072EC9000100F841DB /* ScreenshotManager.swift */; };
+		AAAA00062EC9000100F841DB /* ClipboardManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00052EC9000100F841DB /* ClipboardManager.swift */; };
 		9A987A0D2C73CA66005CA465 /* ShelfView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A987A032C73CA66005CA465 /* ShelfView.swift */; };
 		9A987A102C73CA8D005CA465 /* Collections in Frameworks */ = {isa = PBXBuildFile; productRef = 9A987A0F2C73CA8D005CA465 /* Collections */; };
 		9AB0C6BD2C73C9CB00F7CD30 /* NotchHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AB0C6BB2C73C9CB00F7CD30 /* NotchHomeView.swift */; };
@@ -286,6 +292,12 @@
 		9A0887342C7AFF8E00C160EA /* TabSelectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabSelectionView.swift; sourceTree = "<group>"; };
 		AAAA00012EC9000100F841DB /* PerformanceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerformanceManager.swift; sourceTree = "<group>"; };
 		AAAA00032EC9000100F841DB /* PerformanceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerformanceView.swift; sourceTree = "<group>"; };
+		AAAA000D2EC9000100F841DB /* ScreenshotEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotEditor.swift; sourceTree = "<group>"; };
+		AAAA000F2EC9000100F841DB /* CaptureSelectionOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureSelectionOverlay.swift; sourceTree = "<group>"; };
+		AAAA000B2EC9000100F841DB /* ScreenshotsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotsView.swift; sourceTree = "<group>"; };
+		AAAA00092EC9000100F841DB /* ClipboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardView.swift; sourceTree = "<group>"; };
+		AAAA00072EC9000100F841DB /* ScreenshotManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotManager.swift; sourceTree = "<group>"; };
+		AAAA00052EC9000100F841DB /* ClipboardManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipboardManager.swift; sourceTree = "<group>"; };
 		9A987A032C73CA66005CA465 /* ShelfView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ShelfView.swift; sourceTree = "<group>"; };
 		9AB0C6BB2C73C9CB00F7CD30 /* NotchHomeView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = NotchHomeView.swift; sourceTree = "<group>"; };
 		B10348D82C74E56000475897 /* ConditionalModifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConditionalModifier.swift; sourceTree = "<group>"; };
@@ -517,6 +529,8 @@
 				11D58EA12E760AE100FA8377 /* ImageService.swift */,
 				F38DE6472D8243E2008B5C6D /* BatteryActivityManager.swift */,
 				AAAA00012EC9000100F841DB /* PerformanceManager.swift */,
+				AAAA00072EC9000100F841DB /* ScreenshotManager.swift */,
+				AAAA00052EC9000100F841DB /* ClipboardManager.swift */,
 				112FB7342CCF16F70015238C /* NotchSpaceManager.swift */,
 				147163992C5D35FF0068B555 /* MusicManager.swift */,
 				149E0B962C737D00006418B1 /* WebcamManager.swift */,
@@ -649,6 +663,10 @@
 				9A0887312C7A693000C160EA /* TabButton.swift */,
 				9A0887342C7AFF8E00C160EA /* TabSelectionView.swift */,
 				AAAA00032EC9000100F841DB /* PerformanceView.swift */,
+				AAAA000D2EC9000100F841DB /* ScreenshotEditor.swift */,
+				AAAA000F2EC9000100F841DB /* CaptureSelectionOverlay.swift */,
+				AAAA000B2EC9000100F841DB /* ScreenshotsView.swift */,
+				AAAA00092EC9000100F841DB /* ClipboardView.swift */,
 			);
 			path = Tabs;
 			sourceTree = "<group>";
@@ -1013,6 +1031,12 @@
 				9A0887352C7AFF8E00C160EA /* TabSelectionView.swift in Sources */,
 				AAAA00022EC9000100F841DB /* PerformanceManager.swift in Sources */,
 				AAAA00042EC9000100F841DB /* PerformanceView.swift in Sources */,
+				AAAA000E2EC9000100F841DB /* ScreenshotEditor.swift in Sources */,
+				AAAA00102EC9000100F841DB /* CaptureSelectionOverlay.swift in Sources */,
+				AAAA000C2EC9000100F841DB /* ScreenshotsView.swift in Sources */,
+				AAAA000A2EC9000100F841DB /* ClipboardView.swift in Sources */,
+				AAAA00082EC9000100F841DB /* ScreenshotManager.swift in Sources */,
+				AAAA00062EC9000100F841DB /* ClipboardManager.swift in Sources */,
 				112FB7352CCF16F70015238C /* NotchSpaceManager.swift in Sources */,
 				14FC6E502C7DED5600C7BEA5 /* DataTypes+Extensions.swift in Sources */,
 				1153BD982D9881F900979FB0 /* AppleScriptHelper.swift in Sources */,

@@ -6,10 +6,24 @@
 //  Sampling only runs while the Performance view is visible.
 //
 
+import AppKit
 import Combine
 import Darwin
 import Foundation
 import IOKit.ps
+
+/// A regular app with its summed memory footprint (app + child processes).
+struct TopApp: Identifiable, Equatable {
+    let pid: pid_t
+    let name: String
+    let icon: NSImage?
+    let bytes: UInt64
+    var id: pid_t { pid }
+
+    static func == (lhs: TopApp, rhs: TopApp) -> Bool {
+        lhs.pid == rhs.pid && lhs.bytes == rhs.bytes && lhs.name == rhs.name
+    }
+}
 
 @MainActor
 final class PerformanceManager: ObservableObject {
@@ -26,6 +40,12 @@ final class PerformanceManager: ObservableObject {
     @Published private(set) var batteryPercent: Int?
     @Published private(set) var isCharging: Bool = false
     @Published private(set) var thermalState: ProcessInfo.ThermalState = .nominal
+    @Published private(set) var topApps: [TopApp] = []
+    /// PIDs currently being quit, so the UI can show progress.
+    @Published private(set) var terminating: Set<pid_t> = []
+
+    /// How many apps the list shows.
+    let topAppLimit = 4
 
     var memoryUsage: Double {
         guard memoryTotalBytes > 0 else { return 0 }
@@ -37,6 +57,8 @@ final class PerformanceManager: ObservableObject {
     private var visibleCount = 0
     private var previousCPUTicks: [UInt32]?
     private var previousNet: (rx: UInt64, tx: UInt64, time: Date)?
+    private var tick = 0
+    private var topAppsTask: Task<Void, Never>?
 
     private init() {}
 
@@ -60,6 +82,9 @@ final class PerformanceManager: ObservableObject {
         guard visibleCount == 0 else { return }
         timer?.invalidate()
         timer = nil
+        topAppsTask?.cancel()
+        topAppsTask = nil
+        tick = 0
         previousCPUTicks = nil
         previousNet = nil
     }
@@ -70,6 +95,49 @@ final class PerformanceManager: ObservableObject {
         sampleNetwork()
         sampleBattery()
         thermalState = ProcessInfo.processInfo.thermalState
+        // The process scan is the expensive part, so refresh it every 3 seconds.
+        if tick % 3 == 0 { refreshTopApps() }
+        tick += 1
+    }
+
+    // MARK: - Top apps by memory
+    func refreshTopApps() {
+        guard topAppsTask == nil else { return }
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        let apps = NSWorkspace.shared.runningApplications.filter {
+            $0.activationPolicy == .regular && $0.processIdentifier != ownPID && !$0.isTerminated
+                && $0.bundleIdentifier != "com.apple.finder"
+        }
+        let pids = apps.map(\.processIdentifier)
+        topAppsTask = Task { [weak self] in
+            let footprints = await XPCHelperClient.shared.memoryFootprints(for: pids)
+            guard let self, !Task.isCancelled else { return }
+            let ranked = apps.compactMap { app -> TopApp? in
+                guard let bytes = footprints[app.processIdentifier], bytes > 0 else { return nil }
+                return TopApp(
+                    pid: app.processIdentifier,
+                    name: app.localizedName ?? app.bundleIdentifier ?? "PID \(app.processIdentifier)",
+                    icon: app.icon,
+                    bytes: bytes
+                )
+            }
+            .sorted { $0.bytes > $1.bytes }
+            self.topApps = Array(ranked.prefix(self.topAppLimit))
+            self.topAppsTask = nil
+        }
+    }
+
+    /// Quit an app via the helper. `force` skips the app's own quit handling (unsaved work is lost).
+    func terminate(_ app: TopApp, force: Bool) {
+        terminating.insert(app.pid)
+        Task { [weak self] in
+            _ = await XPCHelperClient.shared.terminateApp(pid: app.pid, force: force)
+            // Give the app a moment to quit (it may show a "save changes?" dialog).
+            try? await Task.sleep(for: .seconds(1.5))
+            guard let self else { return }
+            self.terminating.remove(app.pid)
+            self.refreshTopApps()
+        }
     }
 
     // MARK: - CPU
