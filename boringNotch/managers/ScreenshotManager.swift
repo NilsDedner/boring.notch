@@ -71,6 +71,9 @@ extension Defaults.Keys {
     static let screenshotFolderBookmark = Key<Data?>("screenshotFolderBookmark", default: nil)
     /// Screenshots tab shows the video (screen recording) buttons.
     static let screenshotTabVideoMode = Key<Bool>("screenshotTabVideoMode", default: false)
+    /// Screen recordings include the Mac's sound / the microphone (macOS 15+).
+    static let recordSystemAudio = Key<Bool>("recordSystemAudio", default: true)
+    static let recordMicrophone = Key<Bool>("recordMicrophone", default: true)
 }
 
 enum RecordingTimer {
@@ -98,6 +101,8 @@ final class ScreenshotManager: ObservableObject {
     private var visibleCount = 0
     private var recordingPartialURL: URL?
     private var recordingWatchdog: Task<Void, Never>?
+    /// The ScreenCaptureKit recorder (typed as AnyObject because it needs macOS 15).
+    private var activeRecorder: AnyObject?
     private var isStoppingRecording = false
     private let recordingFrame = RecordingFrameWindow()
 
@@ -215,8 +220,8 @@ final class ScreenshotManager: ObservableObject {
 
     // MARK: - Screen recording
 
-    /// Starts a video recording with `screencapture -v`. Stopped via `stopRecording()`
-    /// (the red timer in the closed notch or the stop button in the tab).
+    /// Starts a video recording. Stopped via `stopRecording()` (the red timer in the
+    /// closed notch or the stop button in the tab).
     func startRecording(_ mode: RecordMode) {
         guard !isCapturing, !isRecording else { return }
         isCapturing = true
@@ -227,45 +232,87 @@ final class ScreenshotManager: ObservableObject {
                 CaptureSelectionOverlay.present(confirmTitle: "Aufnahme starten", confirmIcon: "record.circle", accent: .red) { [weak self] rect in
                     guard let self else { return }
                     guard let rect else { self.isCapturing = false; return }
+                    let screen = NSScreen.screens.first { $0.frame.intersects(rect) } ?? NSScreen.main ?? NSScreen.screens[0]
                     self.recordingFrame.show(around: rect)
-                    self.runRecording(arguments: ["-R", CaptureSelectionOverlay.screencaptureRect(rect)], delay: 0.15)
+                    self.runRecording(rect: rect, screen: screen, delay: 0.15)
                 }
             }
         case .screen:
-            // Record the display the mouse is on (screencapture counts displays from 1 = main).
+            // Record the display the mouse is on.
             let mouse = NSEvent.mouseLocation
-            let index = (NSScreen.screens.firstIndex { $0.frame.contains(mouse) } ?? 0) + 1
-            runRecording(arguments: ["-D", "\(index)"], delay: 0.35)
+            let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main ?? NSScreen.screens[0]
+            runRecording(rect: nil, screen: screen, delay: 0.35)
         }
     }
 
-    /// `screencapture -v` exits immediately inside the app sandbox, so the unsandboxed
-    /// XPC helper runs it. It writes a hidden file into our folder, which we rename when done.
-    private func runRecording(arguments: [String], delay: TimeInterval) {
+    private func runRecording(rect: CGRect?, screen: NSScreen, delay: TimeInterval) {
         let partialURL = folder.appendingPathComponent(".recording-\(UUID().uuidString).mov")
         recordingPartialURL = partialURL
 
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(delay))
-            let started = await XPCHelperClient.shared.startScreenRecording(arguments: arguments, outputPath: partialURL.path)
-            bnCaptureLog("recording start via helper: \(started)")
+            let started: Bool
+            if #available(macOS 15.0, *) {
+                started = await startScreenCaptureKitRecording(rect: rect, screen: screen, outputURL: partialURL)
+            } else {
+                started = await startHelperRecording(rect: rect, screen: screen, outputURL: partialURL)
+            }
+            bnCaptureLog("recording started: \(started)")
             guard started else {
                 self.finishRecording(written: false)
                 return
             }
             self.recordingStartedAt = Date()
             BoringViewCoordinator.shared.currentView = .screenshots
-            self.watchRecording()
         }
     }
 
-    /// Notices when screencapture ends on its own (e.g. display disconnected).
-    private func watchRecording() {
+    /// macOS 15+: ScreenCaptureKit with system audio and microphone; our own windows are excluded.
+    @available(macOS 15.0, *)
+    private func startScreenCaptureKitRecording(rect: CGRect?, screen: NSScreen, outputURL: URL) async -> Bool {
+        var microphone = Defaults[.recordMicrophone]
+        if microphone {
+            switch AVCaptureDevice.authorizationStatus(for: .audio) {
+            case .authorized: break
+            case .notDetermined: microphone = await AVCaptureDevice.requestAccess(for: .audio)
+            default: microphone = false
+            }
+        }
+        let recorder = ScreenRecorder()
+        recorder.onUnexpectedStop = { [weak self] in self?.stopRecording() }
+        do {
+            try await recorder.start(rect: rect, screen: screen, systemAudio: Defaults[.recordSystemAudio],
+                                     microphone: microphone, outputURL: outputURL)
+            activeRecorder = recorder
+            return true
+        } catch {
+            NSLog("ScreenCaptureKit recording failed to start: \(error)")
+            return false
+        }
+    }
+
+    /// macOS 14: `screencapture -v` via the unsandboxed XPC helper (it exits immediately
+    /// inside the app sandbox). No audio.
+    private func startHelperRecording(rect: CGRect?, screen: NSScreen, outputURL: URL) async -> Bool {
+        let arguments: [String]
+        if let rect {
+            arguments = ["-R", CaptureSelectionOverlay.screencaptureRect(rect)]
+        } else {
+            let index = (NSScreen.screens.firstIndex(of: screen) ?? 0) + 1   // 1 = main display
+            arguments = ["-D", "\(index)"]
+        }
+        let started = await XPCHelperClient.shared.startScreenRecording(arguments: arguments, outputPath: outputURL.path)
+        if started { watchHelperRecording() }
+        return started
+    }
+
+    /// Notices when the helper's screencapture ends on its own (e.g. display disconnected).
+    private func watchHelperRecording() {
         recordingWatchdog?.cancel()
         recordingWatchdog = Task { @MainActor in
-            while !Task.isCancelled, self.isRecording {
+            while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
-                guard !Task.isCancelled, self.isRecording else { return }
+                guard !Task.isCancelled, self.isRecording else { continue }
                 if await !XPCHelperClient.shared.isScreenRecording() {
                     self.stopRecording()
                     return
@@ -274,13 +321,20 @@ final class ScreenshotManager: ObservableObject {
         }
     }
 
-    /// Ends the recording; screencapture finalises the movie on SIGINT.
+    /// Ends the recording and saves the movie.
     func stopRecording() {
         guard isRecording, !isStoppingRecording else { return }
         isStoppingRecording = true
         recordingWatchdog?.cancel()
+        recordingWatchdog = nil
         Task { @MainActor in
-            let written = await XPCHelperClient.shared.stopScreenRecording()
+            let written: Bool
+            if #available(macOS 15.0, *), let recorder = self.activeRecorder as? ScreenRecorder {
+                written = await recorder.stop()
+                self.activeRecorder = nil
+            } else {
+                written = await XPCHelperClient.shared.stopScreenRecording()
+            }
             bnCaptureLog("recording stopped, written=\(written)")
             self.finishRecording(written: written)
         }

@@ -21,9 +21,11 @@ import Foundation
     func currentScreenBrightness(with reply: @escaping (NSNumber?) -> Void)
     func setScreenBrightness(_ value: Float, with reply: @escaping (Bool) -> Void)
     // Process monitoring (performed by the unsandboxed helper)
-    /// Input: JSON array of app PIDs. Reply: JSON object {"<pid>": bytes} with the summed
-    /// physical footprint of each app and all of its descendant processes.
-    func memoryFootprints(_ pidsJSON: Data, with reply: @escaping (Data?) -> Void)
+    /// Input: JSON array of app PIDs. Reply: JSON {"<pid>": {"mem": bytes, "cpu": ns}} summed over
+    /// each app and all of its descendant processes ("cpu" = total CPU time used so far).
+    func appStatistics(_ pidsJSON: Data, with reply: @escaping (Data?) -> Void)
+    /// Reply: JSON {"fans": [{"rpm", "min", "max"}], "power": watts} read from the SMC.
+    func readSensors(with reply: @escaping (Data?) -> Void)
     /// Gracefully quits (or force-quits) a regular GUI app. Returns false for non-app or protected PIDs.
     func terminateApp(_ pid: Int32, force: Bool, with reply: @escaping (Bool) -> Void)
     // Screen recording via screencapture -v (fails inside the app sandbox)

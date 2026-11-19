@@ -13,6 +13,14 @@ struct ScreenshotsView: View {
     @EnvironmentObject private var vm: BoringViewModel
     @ObservedObject private var manager = ScreenshotManager.shared
     @Default(.screenshotTabVideoMode) private var videoMode
+    @Default(.recordSystemAudio) private var recordSystemAudio
+    @Default(.recordMicrophone) private var recordMicrophone
+
+    /// Audio needs ScreenCaptureKit's recording output (macOS 15+).
+    private var audioSupported: Bool {
+        if #available(macOS 15.0, *) { return true }
+        return false
+    }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -54,6 +62,12 @@ struct ScreenshotsView: View {
             }
 
             HStack(spacing: 5) {
+                if videoMode && audioSupported {
+                    toggleButton(on: $recordSystemAudio, onIcon: "speaker.wave.2.fill", offIcon: "speaker.slash",
+                                 help: recordSystemAudio ? "Systemton wird aufgenommen" : "Systemton aus")
+                    toggleButton(on: $recordMicrophone, onIcon: "mic.fill", offIcon: "mic.slash",
+                                 help: recordMicrophone ? "Mikrofon wird aufgenommen" : "Mikrofon aus")
+                }
                 smallButton(icon: "folder", help: "Screenshot-Ordner öffnen") { manager.openFolder() }
                 if manager.linkedFolder == nil {
                     smallButton(icon: "link.badge.plus", help: "macOS-Screenshot-Ordner verbinden (z. B. Schreibtisch), damit auch ⇧⌘4-Screenshots hier erscheinen") {
@@ -133,6 +147,22 @@ struct ScreenshotsView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    private func toggleButton(on: Binding<Bool>, onIcon: String, offIcon: String, help: String) -> some View {
+        Button {
+            on.wrappedValue.toggle()
+        } label: {
+            Image(systemName: on.wrappedValue ? onIcon : offIcon)
+                .font(.caption)
+                .foregroundStyle(on.wrappedValue ? .white : .gray)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(RoundedRectangle(cornerRadius: 8).fill(
+                    on.wrappedValue ? Color.red.opacity(0.35) : Color(nsColor: .secondarySystemFill)))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 
     private func smallButton(icon: String, help: String, action: @escaping () -> Void) -> some View {

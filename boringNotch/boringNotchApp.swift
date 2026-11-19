@@ -282,6 +282,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Clipboard history must run all the time to catch every copy.
         ClipboardManager.shared.start()
+        // Starts the light CPU history sampling, so the Performance chart is never empty.
+        _ = PerformanceManager.shared
 
         NotificationCenter.default.addObserver(
             self,

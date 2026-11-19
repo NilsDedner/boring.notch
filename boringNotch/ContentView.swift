@@ -24,6 +24,7 @@ struct ContentView: View {
     @ObservedObject var brightnessManager = BrightnessManager.shared
     @ObservedObject var volumeManager = VolumeManager.shared
     @ObservedObject var screenshotManager = ScreenshotManager.shared
+    @ObservedObject var warningCenter = PerformanceWarningCenter.shared
     @State private var hoverTask: Task<Void, Never>?
     @State private var isHovering: Bool = false
     @State private var anyDropDebounceTask: Task<Void, Never>?
@@ -68,6 +69,8 @@ struct ContentView: View {
             chinWidth = 640
         } else if screenshotManager.isRecording && vm.notchState == .closed {
             chinWidth += 2 * recordingWingWidth
+        } else if warningCenter.warning != nil && vm.notchState == .closed {
+            chinWidth += 2 * warningWingWidth
         } else if (!coordinator.expandingView.show || coordinator.expandingView.type == .music)
             && vm.notchState == .closed && (musicManager.isPlaying || !musicManager.isPlayerIdle)
             && coordinator.musicLiveActivityEnabled && !vm.hideOnClosed
@@ -292,6 +295,8 @@ struct ContentView: View {
                               .transition(.opacity)
                       } else if vm.notchState == .closed, let startedAt = screenshotManager.recordingStartedAt {
                           RecordingLiveActivity(startedAt: startedAt)
+                      } else if vm.notchState == .closed, let warning = warningCenter.warning {
+                          PerformanceWarningActivity(warning)
                       } else if (!coordinator.expandingView.show || coordinator.expandingView.type == .music) && vm.notchState == .closed && (musicManager.isPlaying || !musicManager.isPlayerIdle) && coordinator.musicLiveActivityEnabled && !vm.hideOnClosed {
                           MusicLiveActivity()
                               .frame(alignment: .center)
@@ -407,6 +412,47 @@ struct ContentView: View {
         .contentShape(Rectangle())
         .onTapGesture { screenshotManager.stopRecording() }
         .help("Aufnahme beenden")
+        .transition(.opacity)
+    }
+
+    private let warningWingWidth: CGFloat = 60
+
+    /// Closed-notch warning while the Mac is under heavy load. Clicking it opens the
+    /// Performance tab and hides the warning until the condition has cleared.
+    @ViewBuilder
+    func PerformanceWarningActivity(_ warning: PerformanceWarning) -> some View {
+        let color: Color = warning.critical ? .red : (warning.kind == .memory ? .yellow : .orange)
+        let icon: String = switch warning.kind {
+        case .thermal: "thermometer.high"
+        case .memory: "memorychip.fill"
+        case .cpu: "flame.fill"
+        }
+        HStack(spacing: 0) {
+            Image(systemName: icon)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(color)
+                .symbolEffect(.pulse, options: .repeating)
+                .frame(width: warningWingWidth)
+
+            Rectangle()
+                .fill(.black)
+                .frame(width: vm.closedNotchSize.width - 20)
+
+            Text(warning.text)
+                .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                .foregroundStyle(color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .frame(width: warningWingWidth)
+        }
+        .frame(height: vm.effectiveClosedNotchHeight, alignment: .center)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            warningCenter.acknowledge()
+            coordinator.currentView = .performance
+            doOpen()
+        }
+        .help("Leistungswarnung: klicken zum Öffnen")
         .transition(.opacity)
     }
 

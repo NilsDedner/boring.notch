@@ -20,7 +20,10 @@ extension BoringNotchXPCHelper {
         "theboringteam.boringnotch",
     ]
 
-    @objc func memoryFootprints(_ pidsJSON: Data, with reply: @escaping (Data?) -> Void) {
+    /// Input: JSON array of app PIDs. Reply: JSON {"<pid>": {"mem": bytes, "cpu": nanoseconds}}
+    /// summed over each app and all of its child processes. "cpu" is the total CPU time used
+    /// so far; the app turns two samples into a percentage.
+    @objc func appStatistics(_ pidsJSON: Data, with reply: @escaping (Data?) -> Void) {
         guard let pids = try? JSONSerialization.jsonObject(with: pidsJSON) as? [Int] else {
             reply(nil)
             return
@@ -35,17 +38,26 @@ extension BoringNotchXPCHelper {
             }
         }
 
-        var result: [String: UInt64] = [:]
+        var timebase = mach_timebase_info_data_t()
+        mach_timebase_info(&timebase)
+
+        var result: [String: [String: UInt64]] = [:]
         for appPID in pids {
-            var total: UInt64 = 0
+            var memory: UInt64 = 0
+            var cpuTicks: UInt64 = 0
             var stack: [pid_t] = [pid_t(appPID)]
             var seen = Set<pid_t>()
             while let pid = stack.popLast() {
                 guard seen.insert(pid).inserted else { continue }
-                total += Self.footprint(of: pid)
+                if let usage = Self.rusage(of: pid) {
+                    memory += usage.ri_phys_footprint
+                    cpuTicks += usage.ri_user_time + usage.ri_system_time
+                }
                 stack.append(contentsOf: children[pid] ?? [])
             }
-            result[String(appPID)] = total
+            // rusage CPU times are in mach absolute time units.
+            let nanoseconds = UInt64(Double(cpuTicks) * Double(timebase.numer) / Double(max(timebase.denom, 1)))
+            result[String(appPID)] = ["mem": memory, "cpu": nanoseconds]
         }
         reply(try? JSONSerialization.data(withJSONObject: result))
     }
@@ -81,14 +93,14 @@ extension BoringNotchXPCHelper {
         return pid_t(info.pbi_ppid)
     }
 
-    /// Same metric Activity Monitor shows as "Memory".
-    private static func footprint(of pid: pid_t) -> UInt64 {
+    /// ri_phys_footprint is the "Memory" column of Activity Monitor.
+    private static func rusage(of pid: pid_t) -> rusage_info_v4? {
         var usage = rusage_info_v4()
         let result = withUnsafeMutablePointer(to: &usage) { pointer in
             pointer.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
                 proc_pid_rusage(pid, RUSAGE_INFO_V4, $0)
             }
         }
-        return result == 0 ? usage.ri_phys_footprint : 0
+        return result == 0 ? usage : nil
     }
 }

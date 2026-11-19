@@ -245,27 +245,54 @@ final class XPCHelperClient: NSObject {
     // MARK: - Processes
 
     /// Summed memory footprint (app + descendant processes) per PID, in bytes.
-    nonisolated func memoryFootprints(for pids: [pid_t]) async -> [pid_t: UInt64] {
+    /// Memory footprint (bytes) and total CPU time (ns) per app, children included.
+    nonisolated func appStatistics(for pids: [pid_t]) async -> [pid_t: (memory: UInt64, cpuNanoseconds: UInt64)] {
         guard let payload = try? JSONSerialization.data(withJSONObject: pids.map { Int($0) }) else { return [:] }
         do {
             let service = await MainActor.run {
                 ensureRemoteService()
             }
             let data: Data? = try await service.withContinuation { service, continuation in
-                service.memoryFootprints(payload) { reply in
+                service.appStatistics(payload) { reply in
                     continuation.resume(returning: reply)
                 }
             }
             guard let data,
-                  let dict = try? JSONSerialization.jsonObject(with: data) as? [String: NSNumber]
+                  let dict = try? JSONSerialization.jsonObject(with: data) as? [String: [String: NSNumber]]
             else { return [:] }
-            var result: [pid_t: UInt64] = [:]
+            var result: [pid_t: (memory: UInt64, cpuNanoseconds: UInt64)] = [:]
             for (key, value) in dict {
-                if let pid = pid_t(key) { result[pid] = value.uint64Value }
+                guard let pid = pid_t(key) else { continue }
+                result[pid] = (value["mem"]?.uint64Value ?? 0, value["cpu"]?.uint64Value ?? 0)
             }
             return result
         } catch {
             return [:]
+        }
+    }
+
+    struct SensorReading: Sendable {
+        struct Fan: Sendable { let rpm: Double; let min: Double; let max: Double }
+        let fans: [Fan]
+        let powerWatts: Double?
+    }
+
+    /// Fan speeds and system power from the SMC (via the helper).
+    nonisolated func readSensors() async -> SensorReading? {
+        do {
+            let service = await MainActor.run { ensureRemoteService() }
+            let data: Data? = try await service.withContinuation { service, continuation in
+                service.readSensors { reply in
+                    continuation.resume(returning: reply)
+                }
+            }
+            guard let data, let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+            let fans = (dict["fans"] as? [[String: NSNumber]] ?? []).map {
+                SensorReading.Fan(rpm: $0["rpm"]?.doubleValue ?? 0, min: $0["min"]?.doubleValue ?? 0, max: $0["max"]?.doubleValue ?? 0)
+            }
+            return SensorReading(fans: fans, powerWatts: (dict["power"] as? NSNumber)?.doubleValue)
+        } catch {
+            return nil
         }
     }
 
