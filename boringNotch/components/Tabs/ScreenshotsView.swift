@@ -140,7 +140,7 @@ struct ScreenshotsView: View {
                     Text(RecordingTimer.text(since: startedAt, now: context.date))
                         .font(.system(size: 13, weight: .semibold).monospacedDigit())
                 }
-                Text("Aufnahme beenden").font(.caption2).opacity(0.8)
+                Text("Beenden ↩").font(.caption2).opacity(0.8)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(0.75)))

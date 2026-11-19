@@ -10,6 +10,7 @@
 
 import AppKit
 import AVFoundation
+import Carbon.HIToolbox
 import Combine
 import Defaults
 import ImageIO
@@ -105,6 +106,8 @@ final class ScreenshotManager: ObservableObject {
     private var activeRecorder: AnyObject?
     private var isStoppingRecording = false
     private let recordingFrame = RecordingFrameWindow()
+    /// Enter / keypad Enter stop the recording (only registered while recording).
+    private let stopHotKey = StopRecordingHotKey()
 
     /// ~/Pictures/Boring Notch Screenshots (real home, not the sandbox container).
     let folder: URL = {
@@ -263,6 +266,7 @@ final class ScreenshotManager: ObservableObject {
                 return
             }
             self.recordingStartedAt = Date()
+            self.stopHotKey.register { [weak self] in self?.stopRecording() }
             BoringViewCoordinator.shared.currentView = .screenshots
         }
     }
@@ -341,6 +345,7 @@ final class ScreenshotManager: ObservableObject {
     }
 
     private func finishRecording(written: Bool) {
+        stopHotKey.unregister()
         recordingFrame.hide()
         recordingStartedAt = nil
         isStoppingRecording = false
@@ -511,5 +516,53 @@ final class ScreenshotManager: ObservableObject {
         if stale, let fresh = try? url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil) {
             Defaults[.screenshotFolderBookmark] = fresh
         }
+    }
+}
+
+/// System-wide Enter key while a recording runs, so the same key that started an area
+/// recording also stops it. Uses a Carbon hot key: works in the sandbox and needs no
+/// Accessibility permission. While registered, Enter does not reach other apps.
+private final class StopRecordingHotKey: @unchecked Sendable {
+    private static let signature: OSType = 0x424E_5245   // "BNRE"
+    private var hotKeys: [EventHotKeyRef] = []
+    private var handler: EventHandlerRef?
+    private var action: (@MainActor () -> Void)?
+
+    @MainActor
+    func register(action: @escaping @MainActor () -> Void) {
+        unregister()
+        self.action = action
+        if handler == nil {
+            var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+            InstallEventHandler(GetApplicationEventTarget(), { _, event, userData in
+                guard let event, let userData else { return OSStatus(eventNotHandledErr) }
+                var hotKeyID = EventHotKeyID()
+                let status = GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+                                               nil, MemoryLayout<EventHotKeyID>.size, nil, &hotKeyID)
+                // Other hot keys (e.g. the app's own shortcuts) belong to other handlers.
+                guard status == noErr, hotKeyID.signature == StopRecordingHotKey.signature else {
+                    return OSStatus(eventNotHandledErr)
+                }
+                let owner = Unmanaged<StopRecordingHotKey>.fromOpaque(userData).takeUnretainedValue()
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated { owner.action?() }
+                }
+                return noErr
+            }, 1, &eventType, Unmanaged.passUnretained(self).toOpaque(), &handler)
+        }
+        for (index, keyCode) in [kVK_Return, kVK_ANSI_KeypadEnter].enumerated() {
+            var ref: EventHotKeyRef?
+            let id = EventHotKeyID(signature: Self.signature, id: UInt32(index + 1))
+            if RegisterEventHotKey(UInt32(keyCode), 0, id, GetApplicationEventTarget(), 0, &ref) == noErr, let ref {
+                hotKeys.append(ref)
+            }
+        }
+    }
+
+    @MainActor
+    func unregister() {
+        hotKeys.forEach { UnregisterEventHotKey($0) }
+        hotKeys.removeAll()
+        action = nil
     }
 }

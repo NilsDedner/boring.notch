@@ -94,7 +94,7 @@ struct PerformanceView: View {
                 }
                 .buttonStyle(.plain)
                 .help(performanceWarnings
-                      ? "Warnungen im Notch an (CPU dauerhaft hoch, Speicher knapp, Mac heiß)"
+                      ? "Warnungen im Notch an: CPU oder GPU dauerhaft hoch, hoher Stromverbrauch, Speicher knapp, Swap wächst schnell, Mac heiß"
                       : "Warnungen im Notch aus")
             }
             .font(.caption2)

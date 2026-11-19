@@ -36,10 +36,13 @@ enum TopAppSort: String, CaseIterable, Defaults.Serializable {
 
 /// Shown in the closed notch while the Mac is under heavy load.
 struct PerformanceWarning: Equatable {
-    enum Kind: Hashable { case thermal, memory, cpu }
+    enum Kind: Hashable { case thermal, memory, swap, power, cpu, gpu }
     let kind: Kind
+    /// Short text for the notch wing.
     let text: String
     let critical: Bool
+    /// Longer explanation for the tooltip.
+    var detail: String = ""
 }
 
 /// Holds only the current warning, so the notch view doesn't redraw on every sample.
@@ -167,6 +170,14 @@ final class PerformanceManager: ObservableObject {
         didSet { if warning != oldValue { PerformanceWarningCenter.shared.warning = warning } }
     }
     private var cpuAlertActive = false
+    private var gpuAlertActive = false
+    private var powerAlertActive = false
+    private var swapAlertActive = false
+    @Published private(set) var isOnBattery = false
+    /// Recent readings for the power (60 s) and swap (10 min) warnings, with uptime timestamps.
+    private var powerSamples: [(time: TimeInterval, watts: Double)] = []
+    private var swapSamples: [(time: TimeInterval, bytes: UInt64)] = []
+    private var backgroundTick = 0
     private var acknowledgedWarnings: Set<PerformanceWarning.Kind> = []
     /// PIDs currently being quit, so the UI can show progress.
     @Published private(set) var terminating: Set<pid_t> = []
@@ -196,6 +207,8 @@ final class PerformanceManager: ObservableObject {
         sampleGPU()
         sampleNetwork()
         sampleWarningInputs()
+        sampleBattery()
+        sampleSwap()
         let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.sample() }
         }
@@ -230,10 +243,19 @@ final class PerformanceManager: ObservableObject {
         sampleGPU()
         sampleNetwork()
         sampleWarningInputs()
+        // Power, battery state and swap for the warnings: every 5 s in the background,
+        // every second while the tab is open.
+        backgroundTick += 1
+        if visibleCount == 0 && backgroundTick % 5 == 0 {
+            sampleBattery()
+            sampleSwap()
+            refreshSensors()
+        }
         evaluateWarnings()
         guard visibleCount > 0 else { return }
         tick += 1
         sampleVisibleStats()
+        sampleSwap()
         refreshSensors()
         // The process scan is the expensive part, so refresh it every 2 seconds.
         if tick % 2 == 0 { refreshTopApps() }
@@ -255,8 +277,13 @@ final class PerformanceManager: ObservableObject {
             self.fans = reading.fans.map { Fan(rpm: $0.rpm, min: $0.min, max: $0.max) }
             self.powerWatts = reading.powerWatts
             if let watts = reading.powerWatts {
-                self.powerHistory.append(watts)
-                if self.powerHistory.count > 60 { self.powerHistory.removeFirst(self.powerHistory.count - 60) }
+                if self.visibleCount > 0 {
+                    self.powerHistory.append(watts)
+                    if self.powerHistory.count > 60 { self.powerHistory.removeFirst(self.powerHistory.count - 60) }
+                }
+                let now = ProcessInfo.processInfo.systemUptime
+                self.powerSamples.append((now, watts))
+                self.powerSamples.removeAll { now - $0.time > 60 }
             }
         }
     }
@@ -272,25 +299,83 @@ final class PerformanceManager: ObservableObject {
         }
     }
 
+    private func sampleSwap() {
+        var swap = xsw_usage()
+        var size = MemoryLayout<xsw_usage>.size
+        guard sysctlbyname("vm.swapusage", &swap, &size, nil, 0) == 0 else { return }
+        swapUsedBytes = swap.xsu_used
+        let now = ProcessInfo.processInfo.systemUptime
+        swapSamples.append((now, swap.xsu_used))
+        swapSamples.removeAll { now - $0.time > 600 }
+    }
+
+    private static func average(_ values: ArraySlice<Double>) -> Double {
+        values.isEmpty ? 0 : values.reduce(0, +) / Double(values.count)
+    }
+
+    private static func gigabytes(_ bytes: UInt64) -> String {
+        String(format: "%.1f", Double(bytes) / 1_073_741_824).replacingOccurrences(of: ".", with: ",")
+    }
+
     private func evaluateWarnings() {
-        // CPU: average of the last 20 s, with hysteresis so it doesn't flicker.
-        let recent = cpuHistory.suffix(20)
-        let average = recent.isEmpty ? 0 : recent.reduce(0, +) / Double(recent.count)
+        // All rules use averages and hysteresis (on above X, off only well below X),
+        // so short spikes don't trigger and warnings don't flicker.
+
+        // CPU: last 20 s.
+        let average = Self.average(cpuHistory.suffix(20))
         if average >= 0.85 { cpuAlertActive = true } else if average < 0.7 { cpuAlertActive = false }
+
+        // GPU: last 60 s. High GPU load is often intended (games, rendering), so be patient.
+        let gpuAverage = Self.average(gpuHistory.suffix(60))
+        if gpuAverage >= 0.8 { gpuAlertActive = true } else if gpuAverage < 0.6 { gpuAlertActive = false }
+
+        // Power: last 60 s; on battery from 30 W, on the power adapter from 60 W.
+        let powerLimit: Double = isOnBattery ? 30 : 60
+        let wattsAverage = powerSamples.count >= 6 ? Self.average(powerSamples.map(\.watts)[...]) : 0
+        if wattsAverage >= powerLimit { powerAlertActive = true } else if wattsAverage < powerLimit * 0.8 { powerAlertActive = false }
+
+        // Swap: growth within the last 10 minutes.
+        let swapGrowth: UInt64 = {
+            guard let latest = swapSamples.last?.bytes, let lowest = swapSamples.map(\.bytes).min() else { return 0 }
+            return latest > lowest ? latest - lowest : 0
+        }()
+        let gib: UInt64 = 1_073_741_824
+        if swapGrowth >= 2 * gib { swapAlertActive = true } else if swapGrowth < gib { swapAlertActive = false }
 
         var active: [PerformanceWarning] = []
         switch thermalState {
-        case .critical: active.append(PerformanceWarning(kind: .thermal, text: "Kritisch", critical: true))
-        case .serious: active.append(PerformanceWarning(kind: .thermal, text: "Heiß", critical: false))
+        case .critical: active.append(PerformanceWarning(kind: .thermal, text: "Kritisch", critical: true,
+                                                         detail: "Der Mac ist sehr heiß und drosselt stark."))
+        case .serious: active.append(PerformanceWarning(kind: .thermal, text: "Heiß", critical: false,
+                                                        detail: "Der Mac ist heiß und drosselt die Leistung."))
         default: break
         }
         if memoryPressureLevel >= 4 {
-            active.append(PerformanceWarning(kind: .memory, text: "RAM voll", critical: true))
+            active.append(PerformanceWarning(kind: .memory, text: "RAM voll", critical: true,
+                                             detail: "Speicherdruck kritisch: Apps werden langsam, macOS lagert massiv aus."))
         } else if memoryPressureLevel >= 2 {
-            active.append(PerformanceWarning(kind: .memory, text: "RAM knapp", critical: false))
+            active.append(PerformanceWarning(kind: .memory, text: "RAM knapp", critical: false,
+                                             detail: "Speicherdruck erhöht: der Arbeitsspeicher wird knapp."))
+        }
+        if swapAlertActive {
+            active.append(PerformanceWarning(
+                kind: .swap, text: "+\(Self.gigabytes(swapGrowth)) GB", critical: swapGrowth >= 4 * gib,
+                detail: "Swap ist in den letzten 10 Minuten um \(Self.gigabytes(swapGrowth)) GB gewachsen. Etwas belegt gerade sehr viel Arbeitsspeicher."))
+        }
+        if powerAlertActive {
+            active.append(PerformanceWarning(
+                kind: .power, text: "\(Int(wattsAverage.rounded())) W", critical: wattsAverage >= powerLimit * 1.5,
+                detail: "\(isOnBattery ? "Akkubetrieb" : "Am Netzteil"): Ø \(Int(wattsAverage.rounded())) W in der letzten Minute (Grenze \(Int(powerLimit)) W)."))
         }
         if cpuAlertActive {
-            active.append(PerformanceWarning(kind: .cpu, text: "CPU \(Int((average * 100).rounded()))%", critical: average >= 0.95))
+            active.append(PerformanceWarning(
+                kind: .cpu, text: "CPU \(Int((average * 100).rounded()))%", critical: average >= 0.95,
+                detail: "Die CPU ist seit 20 Sekunden stark ausgelastet."))
+        }
+        if gpuAlertActive {
+            active.append(PerformanceWarning(
+                kind: .gpu, text: "GPU \(Int((gpuAverage * 100).rounded()))%", critical: gpuAverage >= 0.95,
+                detail: "Die GPU ist seit einer Minute stark ausgelastet."))
         }
 
         // A dismissed warning comes back only after its condition has cleared once.
@@ -440,11 +525,6 @@ final class PerformanceManager: ObservableObject {
         // File cache + purgeable memory: used, but macOS hands it back on demand.
         memoryCachedBytes = UInt64(stats.external_page_count + stats.purgeable_count) * page
 
-        var swap = xsw_usage()
-        var swapSize = MemoryLayout<xsw_usage>.size
-        if sysctlbyname("vm.swapusage", &swap, &swapSize, nil, 0) == 0 {
-            swapUsedBytes = swap.xsu_used
-        }
 
         // Rough pressure indicator: share of RAM held by the compressor + wired.
         memoryPressure = memoryTotalBytes > 0
@@ -558,5 +638,6 @@ final class PerformanceManager: ObservableObject {
             batteryPercent = Int((Double(current) / Double(max) * 100).rounded())
         }
         isCharging = (desc[kIOPSIsChargingKey] as? Bool) ?? false
+        isOnBattery = (desc[kIOPSPowerSourceStateKey] as? String) == kIOPSBatteryPowerValue
     }
 }

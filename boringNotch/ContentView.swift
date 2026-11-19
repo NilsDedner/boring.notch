@@ -68,9 +68,9 @@ struct ContentView: View {
         {
             chinWidth = 640
         } else if screenshotManager.isRecording && vm.notchState == .closed {
-            chinWidth += 2 * recordingWingWidth
+            chinWidth += 2 * recordingWingWidth + 28
         } else if warningCenter.warning != nil && vm.notchState == .closed {
-            chinWidth += 2 * warningWingWidth
+            chinWidth += 2 * warningWingWidth + 28
         } else if (!coordinator.expandingView.show || coordinator.expandingView.type == .music)
             && vm.notchState == .closed && (musicManager.isPlaying || !musicManager.isPlayerIdle)
             && coordinator.musicLiveActivityEnabled && !vm.hideOnClosed
@@ -132,6 +132,9 @@ struct ContentView: View {
                         return view
                             .animation(vm.notchState == .open ? openAnimation : closeAnimation, value: vm.notchState)
                             .animation(.smooth, value: gestureProgress)
+                            // Notch shrinks back smoothly when a warning / recording indicator ends.
+                            .animation(.spring(response: 0.45, dampingFraction: 0.85), value: warningCenter.warning?.kind)
+                            .animation(.spring(response: 0.45, dampingFraction: 0.85), value: screenshotManager.isRecording)
                     }
                     .contentShape(Rectangle())
                     .onHover { hovering in
@@ -382,11 +385,16 @@ struct ContentView: View {
 
     private let recordingWingWidth: CGFloat = 44
 
+    /// Black gap between the left and right part of the recording / warning indicators.
+    /// It must cover the whole camera housing (plus a little air), otherwise the right
+    /// text slides under the hardware notch.
+    private var indicatorGapWidth: CGFloat { vm.closedNotchSize.width + 8 }
+
     /// Closed-notch indicator while a screen recording runs: red dot left of the
     /// camera, elapsed time right of it. Clicking it stops the recording.
     @ViewBuilder
     func RecordingLiveActivity(startedAt: Date) -> some View {
-        HStack(spacing: 0) {
+        NotchWings(wingWidth: recordingWingWidth, gapWidth: indicatorGapWidth, height: vm.effectiveClosedNotchHeight) {
             TimelineView(.periodic(from: startedAt, by: 0.5)) { context in
                 let elapsed = context.date.timeIntervalSince(startedAt)
                 Circle()
@@ -395,23 +403,16 @@ struct ContentView: View {
                     .opacity(Int(elapsed * 2) % 2 == 0 ? 1 : 0.35)
                     .animation(.easeInOut(duration: 0.4), value: Int(elapsed * 2))
             }
-            .frame(width: recordingWingWidth)
-
-            Rectangle()
-                .fill(.black)
-                .frame(width: vm.closedNotchSize.width - 20)   // same gap as the face / music activity
-
+        } right: {
             TimelineView(.periodic(from: startedAt, by: 1)) { context in
                 Text(RecordingTimer.text(since: startedAt, now: context.date))
                     .font(.system(size: 12, weight: .semibold).monospacedDigit())
                     .foregroundStyle(.white)
             }
-            .frame(width: recordingWingWidth)
         }
-        .frame(height: vm.effectiveClosedNotchHeight, alignment: .center)
         .contentShape(Rectangle())
         .onTapGesture { screenshotManager.stopRecording() }
-        .help("Aufnahme beenden")
+        .help("Aufnahme beenden (Klick oder Enter)")
         .transition(.opacity)
     }
 
@@ -421,38 +422,40 @@ struct ContentView: View {
     /// Performance tab and hides the warning until the condition has cleared.
     @ViewBuilder
     func PerformanceWarningActivity(_ warning: PerformanceWarning) -> some View {
-        let color: Color = warning.critical ? .red : (warning.kind == .memory ? .yellow : .orange)
+        let baseColor: Color = switch warning.kind {
+        case .memory, .swap, .power: .yellow
+        case .thermal, .cpu, .gpu: .orange
+        }
+        let color: Color = warning.critical ? .red : baseColor
         let icon: String = switch warning.kind {
         case .thermal: "thermometer.high"
         case .memory: "memorychip.fill"
+        case .swap: "arrow.up.and.down.square.fill"
+        case .power: "bolt.fill"
         case .cpu: "flame.fill"
+        case .gpu: "cube.transparent.fill"
         }
-        HStack(spacing: 0) {
+        NotchWings(wingWidth: warningWingWidth, gapWidth: indicatorGapWidth, height: vm.effectiveClosedNotchHeight) {
             Image(systemName: icon)
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(color)
                 .symbolEffect(.pulse, options: .repeating)
-                .frame(width: warningWingWidth)
-
-            Rectangle()
-                .fill(.black)
-                .frame(width: vm.closedNotchSize.width - 20)
-
+        } right: {
             Text(warning.text)
                 .font(.system(size: 11, weight: .semibold).monospacedDigit())
                 .foregroundStyle(color)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
-                .frame(width: warningWingWidth)
+                .padding(.trailing, 6)   // keep the text off the rounded notch edge
         }
-        .frame(height: vm.effectiveClosedNotchHeight, alignment: .center)
+        .id(warning.kind)   // a different warning slides out anew
         .contentShape(Rectangle())
         .onTapGesture {
             warningCenter.acknowledge()
             coordinator.currentView = .performance
             doOpen()
         }
-        .help("Leistungswarnung: klicken zum Öffnen")
+        .help(warning.detail.isEmpty ? "Leistungswarnung: klicken zum Öffnen" : "\(warning.detail) Klicken zum Öffnen.")
         .transition(.opacity)
     }
 
@@ -749,4 +752,48 @@ struct GeneralDropTargetDelegate: DropDelegate {
     return ContentView()
         .environmentObject(vm)
         .frame(width: vm.notchSize.width, height: vm.notchSize.height)
+}
+
+/// Closed-notch indicator whose two halves slide out of the camera housing to the
+/// left and right when it appears; the notch grows with them.
+private struct NotchWings<Left: View, Right: View>: View {
+    let wingWidth: CGFloat
+    let gapWidth: CGFloat
+    let height: CGFloat
+    let left: Left
+    let right: Right
+    @State private var expanded = false
+
+    init(wingWidth: CGFloat, gapWidth: CGFloat, height: CGFloat,
+         @ViewBuilder left: () -> Left, @ViewBuilder right: () -> Right) {
+        self.wingWidth = wingWidth
+        self.gapWidth = gapWidth
+        self.height = height
+        self.left = left()
+        self.right = right()
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            left
+                .frame(width: wingWidth)
+                .frame(width: expanded ? wingWidth : 0, alignment: .trailing)   // grows out of the camera
+                .clipped()
+                .opacity(expanded ? 1 : 0)
+
+            Rectangle()
+                .fill(.black)
+                .frame(width: gapWidth)
+
+            right
+                .frame(width: wingWidth)
+                .frame(width: expanded ? wingWidth : 0, alignment: .leading)
+                .clipped()
+                .opacity(expanded ? 1 : 0)
+        }
+        .frame(height: height, alignment: .center)
+        .onAppear {
+            withAnimation(.spring(response: 0.5, dampingFraction: 0.72).delay(0.05)) { expanded = true }
+        }
+    }
 }
