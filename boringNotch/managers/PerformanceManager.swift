@@ -329,8 +329,8 @@ final class PerformanceManager: ObservableObject {
         let gpuAverage = Self.average(gpuHistory.suffix(60))
         if gpuAverage >= 0.8 { gpuAlertActive = true } else if gpuAverage < 0.6 { gpuAlertActive = false }
 
-        // Power: last 60 s; on battery from 30 W, on the power adapter from 60 W.
-        let powerLimit: Double = isOnBattery ? 30 : 60
+        // Power: last 60 s; on battery from 30 W, on the power adapter from 45 W.
+        let powerLimit: Double = isOnBattery ? 30 : 45
         let wattsAverage = powerSamples.count >= 6 ? Self.average(powerSamples.map(\.watts)[...]) : 0
         if wattsAverage >= powerLimit { powerAlertActive = true } else if wattsAverage < powerLimit * 0.8 { powerAlertActive = false }
 
