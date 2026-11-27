@@ -14,7 +14,8 @@ import IOKit
 import IOKit.ps
 import Defaults
 
-/// A regular app with memory footprint and CPU load summed over the app and its child processes.
+/// A regular app (memory, CPU and energy summed over the app and its child processes)
+/// or a virtual machine (Lima, Docker, …).
 struct TopApp: Identifiable, Equatable {
     let pid: pid_t
     let name: String
@@ -22,16 +23,26 @@ struct TopApp: Identifiable, Equatable {
     let bytes: UInt64
     /// CPU load like Activity Monitor: 1.0 = one full core (can exceed 1).
     let cpu: Double
+    /// Average power over the last sample interval, from the energy macOS bills to the processes.
+    let watts: Double
+    /// VMs can't be quit from the list (that would pull the plug on the guest).
+    var isVM = false
     var id: pid_t { pid }
 
     static func == (lhs: TopApp, rhs: TopApp) -> Bool {
-        lhs.pid == rhs.pid && lhs.bytes == rhs.bytes && lhs.cpu == rhs.cpu && lhs.name == rhs.name
+        lhs.pid == rhs.pid && lhs.bytes == rhs.bytes && lhs.cpu == rhs.cpu && lhs.watts == rhs.watts && lhs.name == rhs.name
     }
 }
 
 enum TopAppSort: String, CaseIterable, Defaults.Serializable {
-    case memory, cpu
-    var title: String { self == .memory ? "Arbeitsspeicher" : "CPU" }
+    case memory, cpu, energy
+    var title: String {
+        switch self {
+        case .memory: "Arbeitsspeicher"
+        case .cpu: "CPU"
+        case .energy: "Energie"
+        }
+    }
 }
 
 /// Shown in the closed notch while the Mac is under heavy load.
@@ -156,7 +167,7 @@ final class PerformanceManager: ObservableObject {
         }
     }
     private var allApps: [TopApp] = []
-    private var previousAppCPU: [pid_t: (nanoseconds: UInt64, time: UInt64)] = [:]
+    private var previousAppSamples: [pid_t: (cpu: UInt64, energy: UInt64, time: UInt64)] = [:]
 
     // SMC sensors (read by the helper)
     struct Fan: Equatable { let rpm: Double; let min: Double; let max: Double }
@@ -394,7 +405,7 @@ final class PerformanceManager: ObservableObject {
         warning = nil
     }
 
-    // MARK: - Top apps (memory + CPU)
+    // MARK: - Top apps (memory, CPU, energy; apps and VMs)
     func refreshTopApps() {
         guard topAppsTask == nil else { return }
         let ownPID = ProcessInfo.processInfo.processIdentifier
@@ -407,28 +418,60 @@ final class PerformanceManager: ObservableObject {
             let stats = await XPCHelperClient.shared.appStatistics(for: pids)
             let now = DispatchTime.now().uptimeNanoseconds
             guard let self, !Task.isCancelled else { return }
-            var cpuSamples: [pid_t: (nanoseconds: UInt64, time: UInt64)] = [:]
-            self.allApps = apps.compactMap { app -> TopApp? in
+            var samples: [pid_t: (cpu: UInt64, energy: UInt64, time: UInt64)] = [:]
+            let previousSamples = self.previousAppSamples
+            // CPU % and watts = CPU time / energy used since the last sample divided by wall time.
+            func rates(_ pid: pid_t, _ stat: XPCHelperClient.ProcessSample) -> (cpu: Double, watts: Double) {
+                defer { samples[pid] = (stat.cpuNanoseconds, stat.energyNanojoules, now) }
+                guard let previous = previousSamples[pid], now > previous.time else { return (0, 0) }
+                let elapsed = Double(now - previous.time)
+                let cpu = stat.cpuNanoseconds >= previous.cpu ? Double(stat.cpuNanoseconds - previous.cpu) / elapsed : 0
+                // nJ per ns = W
+                let watts = stat.energyNanojoules >= previous.energy ? Double(stat.energyNanojoules - previous.energy) / elapsed : 0
+                return (cpu, watts)
+            }
+
+            var list: [TopApp] = apps.compactMap { app -> TopApp? in
                 let pid = app.processIdentifier
-                guard let stat = stats[pid], stat.memory > 0 else { return nil }
-                // CPU % = CPU time used since the last sample / wall time since then.
-                var cpu = 0.0
-                if let previous = self.previousAppCPU[pid], now > previous.time, stat.cpuNanoseconds >= previous.nanoseconds {
-                    cpu = Double(stat.cpuNanoseconds - previous.nanoseconds) / Double(now - previous.time)
-                }
-                cpuSamples[pid] = (stat.cpuNanoseconds, now)
+                guard let stat = stats.apps[pid], stat.memory > 0 else { return nil }
+                let rate = rates(pid, stat)
                 return TopApp(
                     pid: pid,
                     name: app.localizedName ?? app.bundleIdentifier ?? "PID \(pid)",
                     icon: app.icon,
                     bytes: stat.memory,
-                    cpu: cpu
+                    cpu: rate.cpu,
+                    watts: rate.watts
                 )
             }
-            self.previousAppCPU = cpuSamples
+            for vm in stats.vms where vm.sample.memory > 0 {
+                let rate = rates(vm.pid, vm.sample)
+                let owner = Self.appBundle(containing: vm.ownerPath)
+                list.append(TopApp(
+                    pid: vm.pid,
+                    name: vm.label ?? owner.map { "\($0.name) · VM" } ?? "Virtuelle Maschine",
+                    icon: owner?.icon,
+                    bytes: vm.sample.memory,
+                    cpu: rate.cpu,
+                    watts: rate.watts,
+                    isVM: true
+                ))
+            }
+            self.allApps = list
+            self.previousAppSamples = samples
             self.rankTopApps()
             self.topAppsTask = nil
         }
+    }
+
+    /// Name and icon of the outermost .app bundle an executable lives in
+    /// (e.g. Docker's backend inside /Applications/Docker.app).
+    private static func appBundle(containing path: String?) -> (name: String, icon: NSImage)? {
+        guard let path, let range = path.range(of: ".app/") else { return nil }
+        let bundlePath = String(path[..<range.lowerBound]) + ".app"
+        let name = FileManager.default.displayName(atPath: bundlePath)
+            .replacingOccurrences(of: ".app", with: "")
+        return (name, NSWorkspace.shared.icon(forFile: bundlePath))
     }
 
     private func rankTopApps() {
@@ -436,12 +479,14 @@ final class PerformanceManager: ObservableObject {
         switch topAppSort {
         case .memory: sorted = allApps.sorted { $0.bytes > $1.bytes }
         case .cpu: sorted = allApps.sorted { $0.cpu == $1.cpu ? $0.bytes > $1.bytes : $0.cpu > $1.cpu }
+        case .energy: sorted = allApps.sorted { $0.watts == $1.watts ? $0.bytes > $1.bytes : $0.watts > $1.watts }
         }
         topApps = Array(sorted.prefix(topAppLimit))
     }
 
     /// Quit an app via the helper. `force` skips the app's own quit handling (unsaved work is lost).
     func terminate(_ app: TopApp, force: Bool) {
+        guard !app.isVM else { return }
         terminating.insert(app.pid)
         Task { [weak self] in
             _ = await XPCHelperClient.shared.terminateApp(pid: app.pid, force: force)

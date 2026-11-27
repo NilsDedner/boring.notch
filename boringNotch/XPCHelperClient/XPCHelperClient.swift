@@ -244,10 +244,30 @@ final class XPCHelperClient: NSObject {
 
     // MARK: - Processes
 
-    /// Summed memory footprint (app + descendant processes) per PID, in bytes.
-    /// Memory footprint (bytes) and total CPU time (ns) per app, children included.
-    nonisolated func appStatistics(for pids: [pid_t]) async -> [pid_t: (memory: UInt64, cpuNanoseconds: UInt64)] {
-        guard let payload = try? JSONSerialization.data(withJSONObject: pids.map { Int($0) }) else { return [:] }
+    struct ProcessSample: Sendable {
+        /// Memory footprint in bytes, total CPU time in ns, total energy in nJ.
+        let memory: UInt64
+        let cpuNanoseconds: UInt64
+        let energyNanojoules: UInt64
+    }
+
+    struct VMSample: Sendable {
+        let pid: pid_t
+        let sample: ProcessSample
+        /// e.g. "Lima · default", when the helper could identify the VM.
+        let label: String?
+        /// Executable of the process macOS holds responsible for the VM (e.g. inside Docker.app).
+        let ownerPath: String?
+    }
+
+    struct AppStatistics: Sendable {
+        var apps: [pid_t: ProcessSample] = [:]
+        var vms: [VMSample] = []
+    }
+
+    /// Per app (children included) memory, CPU time and energy, plus running virtual machines.
+    nonisolated func appStatistics(for pids: [pid_t]) async -> AppStatistics {
+        guard let payload = try? JSONSerialization.data(withJSONObject: pids.map { Int($0) }) else { return AppStatistics() }
         do {
             let service = await MainActor.run {
                 ensureRemoteService()
@@ -258,16 +278,30 @@ final class XPCHelperClient: NSObject {
                 }
             }
             guard let data,
-                  let dict = try? JSONSerialization.jsonObject(with: data) as? [String: [String: NSNumber]]
-            else { return [:] }
-            var result: [pid_t: (memory: UInt64, cpuNanoseconds: UInt64)] = [:]
-            for (key, value) in dict {
+                  let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return AppStatistics() }
+
+            func sample(_ values: [String: Any]) -> ProcessSample {
+                ProcessSample(
+                    memory: (values["mem"] as? NSNumber)?.uint64Value ?? 0,
+                    cpuNanoseconds: (values["cpu"] as? NSNumber)?.uint64Value ?? 0,
+                    energyNanojoules: (values["energy"] as? NSNumber)?.uint64Value ?? 0
+                )
+            }
+            var result = AppStatistics()
+            for (key, value) in dict["apps"] as? [String: [String: Any]] ?? [:] {
                 guard let pid = pid_t(key) else { continue }
-                result[pid] = (value["mem"]?.uint64Value ?? 0, value["cpu"]?.uint64Value ?? 0)
+                result.apps[pid] = sample(value)
+            }
+            for value in dict["vms"] as? [[String: Any]] ?? [] {
+                guard let pid = (value["pid"] as? NSNumber)?.int32Value else { continue }
+                result.vms.append(VMSample(pid: pid, sample: sample(value),
+                                           label: value["label"] as? String,
+                                           ownerPath: value["ownerPath"] as? String))
             }
             return result
         } catch {
-            return [:]
+            return AppStatistics()
         }
     }
 

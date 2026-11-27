@@ -116,10 +116,21 @@ struct PerformanceView: View {
 
     private func appRow(_ app: TopApp) -> some View {
         HStack(spacing: 8) {
-            if let icon = app.icon {
-                Image(nsImage: icon).resizable().frame(width: 18, height: 18)
-            } else {
-                Image(systemName: "app").frame(width: 18, height: 18)
+            ZStack(alignment: .bottomTrailing) {
+                if let icon = app.icon {
+                    Image(nsImage: icon).resizable().frame(width: 18, height: 18)
+                } else {
+                    Image(systemName: app.isVM ? "server.rack" : "app")
+                        .font(.system(size: 12))
+                        .frame(width: 18, height: 18)
+                }
+                if app.isVM && app.icon != nil {
+                    Image(systemName: "shippingbox.fill")
+                        .font(.system(size: 7))
+                        .padding(1.5)
+                        .background(Circle().fill(Color.black))
+                        .offset(x: 3, y: 3)
+                }
             }
             Text(app.name)
                 .font(.caption)
@@ -130,15 +141,29 @@ struct PerformanceView: View {
                 .font(.caption)
                 .monospacedDigit()
                 .foregroundStyle(manager.topAppSort == .cpu ? .white : .gray)
-                .frame(width: 44, alignment: .trailing)
+                .frame(width: 40, alignment: .trailing)
                 .help("CPU-Last wie in der Aktivitätsanzeige (100 % = ein Kern)")
+            Text(wattString(app.watts))
+                .font(.caption)
+                .monospacedDigit()
+                .foregroundStyle(manager.topAppSort == .energy ? .white : .gray)
+                .frame(width: 40, alignment: .trailing)
+                .help("Stromverbrauch, den macOS den Prozessen zurechnet (Mittel über 2 s)")
             Text(memoryString(app.bytes))
                 .font(.caption)
                 .monospacedDigit()
                 .foregroundStyle(manager.topAppSort == .memory ? .white : .gray)
                 .frame(width: 54, alignment: .trailing)
 
-            if manager.terminating.contains(app.pid) {
+            if app.isVM {
+                Image(systemName: "info.circle")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.gray)
+                    .frame(width: 14)
+                    .help(app.name.hasPrefix("Lima · ")
+                          ? "Virtuelle Maschine. Beenden mit: limactl stop \(app.name.dropFirst(7))"
+                          : "Virtuelle Maschine. Beende sie in der App, die sie gestartet hat.")
+            } else if manager.terminating.contains(app.pid) {
                 ProgressView().controlSize(.small).frame(width: 22)
             } else if confirmingPID == app.pid {
                 Button("Beenden") {
@@ -175,6 +200,10 @@ struct PerformanceView: View {
         .frame(height: 28)
         .foregroundStyle(.white)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .secondarySystemFill)))
+    }
+
+    private func wattString(_ watts: Double) -> String {
+        watts >= 10 ? String(format: "%.0f W", watts) : String(format: "%.1f W", watts)
     }
 
     private func memoryString(_ bytes: UInt64) -> String {
